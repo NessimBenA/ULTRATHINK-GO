@@ -1,0 +1,9 @@
+ultrathink
+*.exe
+*.log
+.DS_Store
+.env
+*~
+*.tmp
+.vscode/
+.idea/
