@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ULTRATHINK - Agent Feed</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>ULTRATHINK</h1>
+            <div class="controls">
+                <button id="pauseBtn" class="control-btn">Pause</button>
+                <select id="filterSelect" class="filter-select">
+                    <option value="all">All Events</option>
+                    <option value="commit">Commits</option>
+                    <option value="todo">TODO</option>
+                </select>
+            </div>
+        </header>
+
+        <div class="objective-section">
+            <h2>Current Objective</h2>
+            <div id="currentObjective" class="objective">Loading...</div>
+        </div>
+
+        <div class="feed-section">
+            <h2>Agent Feed</h2>
+            <div id="feedList" class="feed-list">
+                <div class="no-events">No events yet...</div>
+            </div>
+        </div>
+
+        <div class="status-bar">
+            <span id="status">Connected</span>
+            <span id="eventCount">0 events</span>
+        </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
