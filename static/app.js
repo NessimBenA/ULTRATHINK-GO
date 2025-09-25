@@ -51,6 +51,8 @@ class UltraThinkApp {
     setupEventListeners() {
         const pauseBtn = document.getElementById('pauseBtn');
         const filterSelect = document.getElementById('filterSelect');
+        const closeSidebar = document.getElementById('closeSidebar');
+        const closeModal = document.getElementById('closeModal');
 
         pauseBtn.addEventListener('click', () => {
             this.togglePause();
@@ -59,6 +61,21 @@ class UltraThinkApp {
         filterSelect.addEventListener('change', (e) => {
             this.currentFilter = e.target.value;
             this.renderFeed();
+        });
+
+        closeSidebar.addEventListener('click', () => {
+            this.closeSidebar();
+        });
+
+        closeModal.addEventListener('click', () => {
+            this.closeModal();
+        });
+
+        // Close modal when clicking outside
+        document.getElementById('fileListModal').addEventListener('click', (e) => {
+            if (e.target.id === 'fileListModal') {
+                this.closeModal();
+            }
         });
     }
 
@@ -102,6 +119,26 @@ class UltraThinkApp {
         }
 
         feedList.innerHTML = filteredEvents.map(event => this.renderEvent(event)).join('');
+
+        // Add event listeners to clickable elements
+        this.setupClickableElements();
+    }
+
+    setupClickableElements() {
+        // Handle file list clicks
+        document.querySelectorAll('.change-clickable').forEach(element => {
+            element.addEventListener('click', (e) => {
+                const files = JSON.parse(e.target.getAttribute('data-files'));
+                this.showFileList(files);
+            });
+        });
+
+        // Handle TODO.md mentions
+        document.querySelectorAll('.todo-mention').forEach(element => {
+            element.addEventListener('click', () => {
+                this.showTodoSidebar();
+            });
+        });
     }
 
     getFilteredEvents() {
@@ -114,6 +151,19 @@ class UltraThinkApp {
     renderEvent(event) {
         const timestamp = new Date(event.timestamp).toLocaleTimeString();
 
+        // Make change clickable if there are multiple files
+        let changeElement = this.escapeHtml(event.change);
+        const hasMultipleFiles = event.files && event.files.length > 1;
+
+        if (hasMultipleFiles) {
+            changeElement = `<span class="change-clickable" data-files='${JSON.stringify(event.files)}'>${changeElement}</span>`;
+        }
+
+        // Make TODO.md mentions clickable
+        if (event.change && event.change.includes('TODO.md')) {
+            changeElement = changeElement.replace(/TODO\.md/g, '<span class="todo-mention">TODO.md</span>');
+        }
+
         return `
             <div class="feed-entry">
                 <div class="entry-header">
@@ -122,7 +172,7 @@ class UltraThinkApp {
                 </div>
                 <div class="entry-content">
                     <div class="intent">${this.escapeHtml(event.intent)}</div>
-                    <div class="change">${this.escapeHtml(event.change)}</div>
+                    <div class="change">${changeElement}</div>
                     <div class="result ${event.result}">${event.result}</div>
                 </div>
             </div>
@@ -156,6 +206,40 @@ class UltraThinkApp {
             console.error('Failed to load objective:', error);
             document.getElementById('currentObjective').textContent = 'Failed to load objective';
         }
+    }
+
+    showFileList(files) {
+        const fileList = document.getElementById('fileList');
+        fileList.innerHTML = files.map(file =>
+            `<div class="file-item">${this.escapeHtml(file)}</div>`
+        ).join('');
+
+        document.getElementById('fileListModal').classList.add('show');
+    }
+
+    closeModal() {
+        document.getElementById('fileListModal').classList.remove('show');
+    }
+
+    async showTodoSidebar() {
+        const sidebar = document.getElementById('todoSidebar');
+        const todoContent = document.getElementById('todoContent');
+
+        sidebar.classList.add('open');
+        todoContent.textContent = 'Loading...';
+
+        try {
+            const response = await fetch('/api/todo-content');
+            const data = await response.json();
+            todoContent.textContent = data.content || 'No content found';
+        } catch (error) {
+            console.error('Failed to load TODO.md content:', error);
+            todoContent.textContent = 'Failed to load TODO.md content';
+        }
+    }
+
+    closeSidebar() {
+        document.getElementById('todoSidebar').classList.remove('open');
     }
 }
 
