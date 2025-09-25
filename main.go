@@ -30,6 +30,7 @@ type FeedEvent struct {
 	Intent    string    `json:"intent"`
 	Change    string    `json:"change"`
 	Result    string    `json:"result"`
+	Files     []string  `json:"files,omitempty"`
 }
 
 type AgentFeed struct {
@@ -117,8 +118,13 @@ func (f *AgentFeed) watchCommits() {
 
 			stats, err := commit.Stats()
 			var change string
+			var files []string
 			if err == nil && len(stats) > 0 {
 				fileCount := len(stats)
+				files = make([]string, fileCount)
+				for i, stat := range stats {
+					files[i] = stat.Name
+				}
 				if fileCount == 1 {
 					change = fmt.Sprintf("Modified %s", stats[0].Name)
 				} else {
@@ -135,6 +141,7 @@ func (f *AgentFeed) watchCommits() {
 				Intent:    intent,
 				Change:    change,
 				Result:    "success",
+				Files:     files,
 			}
 
 			f.broadcast <- event
@@ -266,6 +273,16 @@ func (f *AgentFeed) handleObjective(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"objective": objective})
 }
 
+func (f *AgentFeed) handleTodoContent(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	content, err := os.ReadFile("TODO.md")
+	if err != nil {
+		json.NewEncoder(w).Encode(map[string]string{"content": "Failed to read TODO.md", "error": err.Error()})
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]string{"content": string(content)})
+}
+
 func main() {
 	feed := NewAgentFeed()
 
@@ -277,6 +294,7 @@ func main() {
 	http.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir(staticDir))))
 	http.HandleFunc("/ws", feed.handleWebSocket)
 	http.HandleFunc("/api/objective", feed.handleObjective)
+	http.HandleFunc("/api/todo-content", feed.handleTodoContent)
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		http.ServeFile(w, r, filepath.Join(staticDir, "index.html"))
 	})
