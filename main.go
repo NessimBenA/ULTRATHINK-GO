@@ -3,9 +3,11 @@ package main
 import (
 	"embed"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -114,9 +116,7 @@ type AgentFeed struct {
 	repo *git.Repository
 }
 
-var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool { return true },
-}
+var upgrader = websocket.Upgrader{}
 
 func NewAgentFeed() *AgentFeed {
 	feed := &AgentFeed{hub: NewHub()}
@@ -344,10 +344,40 @@ func newHandler(feed *AgentFeed) (http.Handler, error) {
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		http.ServeFileFS(w, r, ui, "index.html")
 	})
-	return mux, nil
+	return checkHost(mux), nil
+}
+
+func allowedHost(hostport string) bool {
+	host, _, err := net.SplitHostPort(hostport)
+	if err != nil {
+		host = strings.Trim(hostport, "[]")
+	}
+	return strings.EqualFold(host, "localhost") || net.ParseIP(host) != nil
+}
+
+func checkHost(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !allowedHost(r.Host) {
+			http.Error(w, "host not allowed", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func main() {
+	port := "8080"
+	if envPort := os.Getenv("PORT"); envPort != "" {
+		port = envPort
+	}
+	addr := flag.String("addr", net.JoinHostPort("127.0.0.1", port), "address to listen on (host:port)")
+	flag.Parse()
+
+	listener, err := net.Listen("tcp", *addr)
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	feed := NewAgentFeed()
 
 	handler, err := newHandler(feed)
@@ -355,11 +385,6 @@ func main() {
 		log.Fatal(err)
 	}
 
-	port := "8080"
-	if envPort := os.Getenv("PORT"); envPort != "" {
-		port = envPort
-	}
-
-	fmt.Printf("ULTRATHINK Agent Feed running on http://localhost:%s\n", port)
-	log.Fatal(http.ListenAndServe(":"+port, handler))
+	fmt.Printf("ULTRATHINK Agent Feed running on http://%s\n", listener.Addr())
+	log.Fatal(http.Serve(listener, handler))
 }
