@@ -55,7 +55,6 @@ type Hub struct {
 	mu      sync.Mutex
 	clients map[*Client]struct{}
 	history [][]byte
-	paused  bool
 }
 
 func NewHub() *Hub {
@@ -90,11 +89,9 @@ func (h *Hub) Broadcast(event FeedEvent) error {
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if !h.paused {
-		h.history = append(h.history, msg)
-		if len(h.history) > historyLimit {
-			h.history = h.history[1:]
-		}
+	h.history = append(h.history, msg)
+	if len(h.history) > historyLimit {
+		h.history = h.history[1:]
 	}
 	for client := range h.clients {
 		select {
@@ -105,12 +102,6 @@ func (h *Hub) Broadcast(event FeedEvent) error {
 		}
 	}
 	return nil
-}
-
-func (h *Hub) SetPaused(paused bool) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.paused = paused
 }
 
 type AgentFeed struct {
@@ -259,10 +250,6 @@ func (f *AgentFeed) watchTodoFile() {
 	}
 }
 
-type clientMessage struct {
-	Action string `json:"action"`
-}
-
 func (f *AgentFeed) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -275,15 +262,8 @@ func (f *AgentFeed) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	defer f.hub.Unregister(client)
 
 	for {
-		var msg clientMessage
-		if err := conn.ReadJSON(&msg); err != nil {
+		if _, _, err := conn.ReadMessage(); err != nil {
 			return
-		}
-		switch msg.Action {
-		case "pause":
-			f.hub.SetPaused(true)
-		case "resume":
-			f.hub.SetPaused(false)
 		}
 	}
 }
