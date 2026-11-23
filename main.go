@@ -1,12 +1,13 @@
 package main
 
 import (
+	"embed"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -15,6 +16,9 @@ import (
 	"github.com/go-git/go-git/v5"
 	"github.com/gorilla/websocket"
 )
+
+//go:embed static
+var staticFiles embed.FS
 
 type EventType string
 
@@ -283,21 +287,30 @@ func (f *AgentFeed) handleTodoContent(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"content": string(content)})
 }
 
+func newHandler(feed *AgentFeed) (http.Handler, error) {
+	ui, err := fs.Sub(staticFiles, "static")
+	if err != nil {
+		return nil, err
+	}
+
+	mux := http.NewServeMux()
+	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServerFS(ui)))
+	mux.HandleFunc("/ws", feed.handleWebSocket)
+	mux.HandleFunc("/api/objective", feed.handleObjective)
+	mux.HandleFunc("/api/todo-content", feed.handleTodoContent)
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFileFS(w, r, ui, "index.html")
+	})
+	return mux, nil
+}
+
 func main() {
 	feed := NewAgentFeed()
 
-	staticDir := "./static"
-	if _, err := os.Stat(staticDir); os.IsNotExist(err) {
-		os.Mkdir(staticDir, 0755)
+	handler, err := newHandler(feed)
+	if err != nil {
+		log.Fatal(err)
 	}
-
-	http.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir(staticDir))))
-	http.HandleFunc("/ws", feed.handleWebSocket)
-	http.HandleFunc("/api/objective", feed.handleObjective)
-	http.HandleFunc("/api/todo-content", feed.handleTodoContent)
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		http.ServeFile(w, r, filepath.Join(staticDir, "index.html"))
-	})
 
 	port := "8080"
 	if envPort := os.Getenv("PORT"); envPort != "" {
@@ -305,5 +318,5 @@ func main() {
 	}
 
 	fmt.Printf("ULTRATHINK Agent Feed running on http://localhost:%s\n", port)
-	log.Fatal(http.ListenAndServe(":"+port, nil))
+	log.Fatal(http.ListenAndServe(":"+port, handler))
 }
