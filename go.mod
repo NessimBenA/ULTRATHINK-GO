@@ -1,4 +1,4 @@
-module ultrathink
+module github.com/NessimBenA/ULTRATHINK-GO
 
 go 1.23.0
 
