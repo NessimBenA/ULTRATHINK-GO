@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -43,6 +44,7 @@ const (
 	historyLimit = 100
 	sendBuffer   = 256
 	writeWait    = 10 * time.Second
+	todoSettle   = 100 * time.Millisecond
 )
 
 type Client struct {
@@ -208,49 +210,49 @@ func (f *AgentFeed) watchTodoFile() {
 	defer watcher.Close()
 
 	todoPath := "TODO.md"
-	if _, err := os.Stat(todoPath); os.IsNotExist(err) {
-		os.WriteFile(todoPath, []byte("# TODO\n\n"), 0644)
-	}
-
-	err = watcher.Add(todoPath)
+	err = watcher.Add(".")
 	if err != nil {
-		log.Printf("Error watching TODO.md: %v", err)
+		log.Printf("Error watching the current directory for TODO.md: %v", err)
 		return
 	}
 
+	var settled <-chan time.Time
 	for {
 		select {
 		case event := <-watcher.Events:
-			if event.Op&fsnotify.Write == fsnotify.Write {
-				content, err := os.ReadFile(todoPath)
-				if err != nil {
-					continue
-				}
-
-				lines := strings.Split(string(content), "\n")
-				intent := "TODO.md updated"
-				for _, line := range lines {
-					line = strings.TrimSpace(line)
-					if line != "" && !strings.HasPrefix(line, "#") {
-						intent = line
-						if len(intent) > 80 {
-							intent = intent[:80] + "..."
-						}
-						break
-					}
-				}
-
-				feedEvent := FeedEvent{
-					ID:        fmt.Sprintf("todo-%d", time.Now().Unix()),
-					Type:      EventTypeTodo,
-					Timestamp: time.Now(),
-					Intent:    intent,
-					Change:    "TODO.md modified",
-					Result:    "updated",
-				}
-
-				f.publish(feedEvent)
+			if filepath.Clean(event.Name) == todoPath && event.Has(fsnotify.Write|fsnotify.Create) {
+				settled = time.After(todoSettle)
 			}
+		case <-settled:
+			settled = nil
+			content, err := os.ReadFile(todoPath)
+			if err != nil {
+				continue
+			}
+
+			lines := strings.Split(string(content), "\n")
+			intent := "TODO.md updated"
+			for _, line := range lines {
+				line = strings.TrimSpace(line)
+				if line != "" && !strings.HasPrefix(line, "#") {
+					intent = line
+					if len(intent) > 80 {
+						intent = intent[:80] + "..."
+					}
+					break
+				}
+			}
+
+			feedEvent := FeedEvent{
+				ID:        fmt.Sprintf("todo-%d", time.Now().Unix()),
+				Type:      EventTypeTodo,
+				Timestamp: time.Now(),
+				Intent:    intent,
+				Change:    "TODO.md modified",
+				Result:    "updated",
+			}
+
+			f.publish(feedEvent)
 		case err := <-watcher.Errors:
 			log.Printf("File watcher error: %v", err)
 		}
