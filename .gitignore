@@ -1,4 +1,5 @@
-ultrathink
+/ultrathink
+/ULTRATHINK-GO
 *.exe
 *.log
 .DS_Store
