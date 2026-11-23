@@ -37,13 +37,81 @@ type FeedEvent struct {
 	Files     []string  `json:"files,omitempty"`
 }
 
+const (
+	historyLimit = 100
+	sendBuffer   = 256
+	writeWait    = 10 * time.Second
+)
+
+type Client struct {
+	send chan []byte
+}
+
+type Hub struct {
+	mu      sync.Mutex
+	clients map[*Client]struct{}
+	history [][]byte
+	paused  bool
+}
+
+func NewHub() *Hub {
+	return &Hub{clients: make(map[*Client]struct{})}
+}
+
+func (h *Hub) Register() *Client {
+	client := &Client{send: make(chan []byte, sendBuffer)}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, msg := range h.history {
+		client.send <- msg
+	}
+	h.clients[client] = struct{}{}
+	return client
+}
+
+func (h *Hub) Unregister(client *Client) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if _, ok := h.clients[client]; ok {
+		delete(h.clients, client)
+		close(client.send)
+	}
+}
+
+func (h *Hub) Broadcast(event FeedEvent) error {
+	msg, err := json.Marshal(event)
+	if err != nil {
+		return err
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if !h.paused {
+		h.history = append(h.history, msg)
+		if len(h.history) > historyLimit {
+			h.history = h.history[1:]
+		}
+	}
+	for client := range h.clients {
+		select {
+		case client.send <- msg:
+		default:
+			delete(h.clients, client)
+			close(client.send)
+		}
+	}
+	return nil
+}
+
+func (h *Hub) SetPaused(paused bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.paused = paused
+}
+
 type AgentFeed struct {
-	events    []FeedEvent
-	clients   map[*websocket.Conn]bool
-	broadcast chan FeedEvent
-	mutex     sync.RWMutex
-	paused    bool
-	repo      *git.Repository
+	hub  *Hub
+	repo *git.Repository
 }
 
 var upgrader = websocket.Upgrader{
@@ -51,12 +119,7 @@ var upgrader = websocket.Upgrader{
 }
 
 func NewAgentFeed() *AgentFeed {
-	feed := &AgentFeed{
-		events:    make([]FeedEvent, 0, 100),
-		clients:   make(map[*websocket.Conn]bool),
-		broadcast: make(chan FeedEvent),
-		paused:    false,
-	}
+	feed := &AgentFeed{hub: NewHub()}
 
 	repo, err := git.PlainOpen(".")
 	if err != nil {
@@ -64,32 +127,15 @@ func NewAgentFeed() *AgentFeed {
 	}
 	feed.repo = repo
 
-	go feed.handleBroadcast()
 	go feed.watchCommits()
 	go feed.watchTodoFile()
 
 	return feed
 }
 
-func (f *AgentFeed) handleBroadcast() {
-	for event := range f.broadcast {
-		f.mutex.Lock()
-		if !f.paused {
-			f.events = append(f.events, event)
-			if len(f.events) > 100 {
-				f.events = f.events[1:]
-			}
-		}
-		f.mutex.Unlock()
-
-		eventJSON, _ := json.Marshal(event)
-		for client := range f.clients {
-			err := client.WriteMessage(websocket.TextMessage, eventJSON)
-			if err != nil {
-				client.Close()
-				delete(f.clients, client)
-			}
-		}
+func (f *AgentFeed) publish(event FeedEvent) {
+	if err := f.hub.Broadcast(event); err != nil {
+		log.Printf("Broadcast error: %v", err)
 	}
 }
 
@@ -148,7 +194,7 @@ func (f *AgentFeed) watchCommits() {
 				Files:     files,
 			}
 
-			f.broadcast <- event
+			f.publish(event)
 		}
 	}
 }
@@ -203,12 +249,16 @@ func (f *AgentFeed) watchTodoFile() {
 					Result:    "updated",
 				}
 
-				f.broadcast <- feedEvent
+				f.publish(feedEvent)
 			}
 		case err := <-watcher.Errors:
 			log.Printf("File watcher error: %v", err)
 		}
 	}
+}
+
+type clientMessage struct {
+	Action string `json:"action"`
 }
 
 func (f *AgentFeed) handleWebSocket(w http.ResponseWriter, r *http.Request) {
@@ -217,40 +267,33 @@ func (f *AgentFeed) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		log.Printf("WebSocket upgrade error: %v", err)
 		return
 	}
-	defer conn.Close()
 
-	f.mutex.Lock()
-	f.clients[conn] = true
-	events := make([]FeedEvent, len(f.events))
-	copy(events, f.events)
-	f.mutex.Unlock()
-
-	for _, event := range events {
-		eventJSON, _ := json.Marshal(event)
-		conn.WriteMessage(websocket.TextMessage, eventJSON)
-	}
+	client := f.hub.Register()
+	go writeMessages(conn, client.send)
+	defer f.hub.Unregister(client)
 
 	for {
-		var msg map[string]interface{}
-		err := conn.ReadJSON(&msg)
-		if err != nil {
-			f.mutex.Lock()
-			delete(f.clients, conn)
-			f.mutex.Unlock()
-			break
+		var msg clientMessage
+		if err := conn.ReadJSON(&msg); err != nil {
+			return
 		}
+		switch msg.Action {
+		case "pause":
+			f.hub.SetPaused(true)
+		case "resume":
+			f.hub.SetPaused(false)
+		}
+	}
+}
 
-		if action, ok := msg["action"].(string); ok {
-			switch action {
-			case "pause":
-				f.mutex.Lock()
-				f.paused = true
-				f.mutex.Unlock()
-			case "resume":
-				f.mutex.Lock()
-				f.paused = false
-				f.mutex.Unlock()
-			}
+func writeMessages(conn *websocket.Conn, send <-chan []byte) {
+	defer conn.Close()
+	for msg := range send {
+		if err := conn.SetWriteDeadline(time.Now().Add(writeWait)); err != nil {
+			return
+		}
+		if err := conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+			return
 		}
 	}
 }
