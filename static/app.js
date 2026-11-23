@@ -2,6 +2,7 @@ class UltraThinkApp {
     constructor() {
         this.ws = null;
         this.events = [];
+        this.pending = [];
         this.isPaused = false;
         this.currentFilter = 'all';
         this.init();
@@ -16,28 +17,27 @@ class UltraThinkApp {
 
     setupWebSocket() {
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const wsUrl = `${protocol}//${window.location.host}/ws`;
-
-        this.ws = new WebSocket(wsUrl);
+        this.ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
 
         this.ws.onopen = () => {
+            this.events = [];
+            this.pending = [];
+            this.renderFeed();
+            this.updateEventCount();
+            this.updatePauseButton();
             this.updateStatus('connected');
-            console.log('WebSocket connected');
         };
 
-        this.ws.onmessage = (event) => {
-            const feedEvent = JSON.parse(event.data);
-            this.addEvent(feedEvent);
+        this.ws.onmessage = (message) => {
+            this.receive(JSON.parse(message.data));
         };
 
         this.ws.onclose = () => {
             this.updateStatus('disconnected');
-            console.log('WebSocket disconnected');
             setTimeout(() => this.reconnect(), 3000);
         };
 
-        this.ws.onerror = (error) => {
-            console.error('WebSocket error:', error);
+        this.ws.onerror = () => {
             this.updateStatus('error');
         };
     }
@@ -49,29 +49,13 @@ class UltraThinkApp {
     }
 
     setupEventListeners() {
-        const pauseBtn = document.getElementById('pauseBtn');
-        const filterSelect = document.getElementById('filterSelect');
-        const closeSidebar = document.getElementById('closeSidebar');
-        const closeModal = document.getElementById('closeModal');
-
-        pauseBtn.addEventListener('click', () => {
-            this.togglePause();
-        });
-
-        filterSelect.addEventListener('change', (e) => {
+        document.getElementById('pauseBtn').addEventListener('click', () => this.togglePause());
+        document.getElementById('filterSelect').addEventListener('change', (e) => {
             this.currentFilter = e.target.value;
             this.renderFeed();
         });
-
-        closeSidebar.addEventListener('click', () => {
-            this.closeSidebar();
-        });
-
-        closeModal.addEventListener('click', () => {
-            this.closeModal();
-        });
-
-        // Close modal when clicking outside
+        document.getElementById('closeSidebar').addEventListener('click', () => this.closeSidebar());
+        document.getElementById('closeModal').addEventListener('click', () => this.closeModal());
         document.getElementById('fileListModal').addEventListener('click', (e) => {
             if (e.target.id === 'fileListModal') {
                 this.closeModal();
@@ -79,110 +63,119 @@ class UltraThinkApp {
         });
     }
 
-    togglePause() {
-        this.isPaused = !this.isPaused;
-        const pauseBtn = document.getElementById('pauseBtn');
-
+    receive(event) {
         if (this.isPaused) {
-            pauseBtn.textContent = 'Resume';
-            pauseBtn.classList.add('paused');
-            this.sendMessage({ action: 'pause' });
-        } else {
-            pauseBtn.textContent = 'Pause';
-            pauseBtn.classList.remove('paused');
-            this.sendMessage({ action: 'resume' });
+            this.pending.push(event);
+            this.updatePauseButton();
+            return;
         }
+        this.store(event);
+        this.renderFeed();
+        this.updateEventCount();
     }
 
-    sendMessage(message) {
-        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-            this.ws.send(JSON.stringify(message));
-        }
-    }
-
-    addEvent(event) {
+    store(event) {
         this.events.unshift(event);
         if (this.events.length > 100) {
             this.events.pop();
         }
-        this.renderFeed();
-        this.updateEventCount();
+    }
+
+    togglePause() {
+        this.isPaused = !this.isPaused;
+        if (!this.isPaused) {
+            this.pending.forEach((event) => this.store(event));
+            this.pending = [];
+            this.renderFeed();
+            this.updateEventCount();
+        }
+        this.updatePauseButton();
+    }
+
+    updatePauseButton() {
+        const pauseBtn = document.getElementById('pauseBtn');
+        pauseBtn.classList.toggle('paused', this.isPaused);
+        if (!this.isPaused) {
+            pauseBtn.textContent = 'Pause';
+        } else if (this.pending.length === 0) {
+            pauseBtn.textContent = 'Resume';
+        } else {
+            pauseBtn.textContent = `Resume (${this.pending.length} new)`;
+        }
     }
 
     renderFeed() {
         const feedList = document.getElementById('feedList');
         const filteredEvents = this.getFilteredEvents();
-
         if (filteredEvents.length === 0) {
-            feedList.innerHTML = '<div class="no-events">No events yet...</div>';
+            feedList.replaceChildren(this.element('div', 'no-events', 'No events yet...'));
             return;
         }
-
-        feedList.innerHTML = filteredEvents.map(event => this.renderEvent(event)).join('');
-
-        // Add event listeners to clickable elements
-        this.setupClickableElements();
-    }
-
-    setupClickableElements() {
-        // Handle file list clicks
-        document.querySelectorAll('.change-clickable').forEach(element => {
-            element.addEventListener('click', (e) => {
-                const files = JSON.parse(e.target.getAttribute('data-files'));
-                this.showFileList(files);
-            });
-        });
-
-        // Handle TODO.md mentions
-        document.querySelectorAll('.todo-mention').forEach(element => {
-            element.addEventListener('click', () => {
-                this.showTodoSidebar();
-            });
-        });
+        feedList.replaceChildren(...filteredEvents.map((event) => this.renderEvent(event)));
     }
 
     getFilteredEvents() {
         if (this.currentFilter === 'all') {
             return this.events;
         }
-        return this.events.filter(event => event.type === this.currentFilter);
+        return this.events.filter((event) => event.type === this.currentFilter);
+    }
+
+    element(tag, className, text) {
+        const node = document.createElement(tag);
+        if (className) {
+            node.className = className;
+        }
+        if (text !== undefined && text !== null) {
+            node.textContent = text;
+        }
+        return node;
+    }
+
+    tokenClass(base, value) {
+        return /^[a-z0-9-]+$/i.test(value || '') ? `${base} ${value}` : base;
     }
 
     renderEvent(event) {
-        const timestamp = new Date(event.timestamp).toLocaleTimeString();
+        const header = this.element('div', 'entry-header');
+        header.append(
+            this.element('span', this.tokenClass('entry-type', event.type), event.type),
+            this.element('span', 'entry-timestamp', new Date(event.timestamp).toLocaleTimeString())
+        );
 
-        // Make change clickable if there are multiple files
-        let changeElement = this.escapeHtml(event.change);
-        const hasMultipleFiles = event.files && event.files.length > 1;
+        const change = this.element('div', 'change');
+        change.append(this.renderChange(event));
 
-        if (hasMultipleFiles) {
-            changeElement = `<span class="change-clickable" data-files='${JSON.stringify(event.files)}'>${changeElement}</span>`;
-        }
+        const content = this.element('div', 'entry-content');
+        content.append(
+            this.element('div', 'intent', event.intent),
+            change,
+            this.element('div', this.tokenClass('result', event.result), event.result)
+        );
 
-        // Make TODO.md mentions clickable
-        if (event.change && event.change.includes('TODO.md')) {
-            changeElement = changeElement.replace(/TODO\.md/g, '<span class="todo-mention">TODO.md</span>');
-        }
-
-        return `
-            <div class="feed-entry">
-                <div class="entry-header">
-                    <span class="entry-type ${event.type}">${event.type}</span>
-                    <span class="entry-timestamp">${timestamp}</span>
-                </div>
-                <div class="entry-content">
-                    <div class="intent">${this.escapeHtml(event.intent)}</div>
-                    <div class="change">${changeElement}</div>
-                    <div class="result ${event.result}">${event.result}</div>
-                </div>
-            </div>
-        `;
+        const entry = this.element('div', 'feed-entry');
+        entry.append(header, content);
+        return entry;
     }
 
-    escapeHtml(text) {
-        const div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
+    renderChange(event) {
+        const multiple = Array.isArray(event.files) && event.files.length > 1;
+        const target = multiple ? this.element('span', 'change-clickable') : document.createDocumentFragment();
+        if (multiple) {
+            target.addEventListener('click', () => this.showFileList(event.files));
+        }
+        (event.change || '').split('TODO.md').forEach((part, index) => {
+            if (index > 0) {
+                const mention = this.element('span', 'todo-mention', 'TODO.md');
+                mention.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    this.showTodoSidebar();
+                });
+                target.append(mention);
+            }
+            target.append(part);
+        });
+        return target;
     }
 
     updateStatus(status) {
@@ -192,28 +185,23 @@ class UltraThinkApp {
     }
 
     updateEventCount() {
-        const eventCountEl = document.getElementById('eventCount');
         const count = this.events.length;
-        eventCountEl.textContent = `${count} event${count !== 1 ? 's' : ''}`;
+        document.getElementById('eventCount').textContent = `${count} event${count !== 1 ? 's' : ''}`;
     }
 
     async loadCurrentObjective() {
-        try {
-            const response = await fetch('/api/objective');
-            const data = await response.json();
-            document.getElementById('currentObjective').textContent = data.objective;
-        } catch (error) {
-            console.error('Failed to load objective:', error);
-            document.getElementById('currentObjective').textContent = 'Failed to load objective';
+        const objective = document.getElementById('currentObjective');
+        const response = await fetch('/api/objective');
+        if (!response.ok) {
+            objective.textContent = 'Failed to load objective';
+            return;
         }
+        const data = await response.json();
+        objective.textContent = data.objective;
     }
 
     showFileList(files) {
-        const fileList = document.getElementById('fileList');
-        fileList.innerHTML = files.map(file =>
-            `<div class="file-item">${this.escapeHtml(file)}</div>`
-        ).join('');
-
+        document.getElementById('fileList').replaceChildren(...files.map((file) => this.element('div', 'file-item', file)));
         document.getElementById('fileListModal').classList.add('show');
     }
 
@@ -222,20 +210,16 @@ class UltraThinkApp {
     }
 
     async showTodoSidebar() {
-        const sidebar = document.getElementById('todoSidebar');
         const todoContent = document.getElementById('todoContent');
-
-        sidebar.classList.add('open');
+        document.getElementById('todoSidebar').classList.add('open');
         todoContent.textContent = 'Loading...';
-
-        try {
-            const response = await fetch('/api/todo-content');
-            const data = await response.json();
-            todoContent.textContent = data.content || 'No content found';
-        } catch (error) {
-            console.error('Failed to load TODO.md content:', error);
+        const response = await fetch('/api/todo-content');
+        if (!response.ok) {
             todoContent.textContent = 'Failed to load TODO.md content';
+            return;
         }
+        const data = await response.json();
+        todoContent.textContent = data.content || 'No content found';
     }
 
     closeSidebar() {
